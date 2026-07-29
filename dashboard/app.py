@@ -1,11 +1,22 @@
 """Fulfillment Control Tower — e-commerce fulfillment analytics dashboard."""
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+import agent
+from data import (
+    fmt_currency,
+    fmt_days,
+    fmt_int,
+    fmt_pct,
+    load_categories as _load_categories,
+    load_monthly as _load_monthly,
+    load_orders as _load_orders,
+    load_sellers as _load_sellers,
+    titleize,
+)
 
 # ----------------------------------------------------------------------------
 # Palette (neutral base + single accent, fixed status colors)
@@ -30,8 +41,6 @@ PLOTLY_LAYOUT = dict(
     hovermode="x unified",
     showlegend=False,
 )
-
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
 
 st.set_page_config(
     page_title="Fulfillment Control Tower",
@@ -137,6 +146,29 @@ st.markdown(
         margin-top: -0.2rem;
         margin-bottom: 0.4rem;
     }}
+    .agent-badge {{
+        display: inline-block;
+        font-size: 0.72rem;
+        font-weight: 600;
+        padding: 0.1rem 0.55rem;
+        border-radius: 999px;
+        margin-bottom: 0.5rem;
+    }}
+    .agent-badge-demo {{ background-color: #fdf3d9; color: #7a5b00; }}
+    .agent-badge-llm {{ background-color: #e3edfb; color: {ACCENT}; }}
+    .agent-section-label {{
+        font-weight: 600;
+        color: {INK};
+        font-size: 0.88rem;
+        margin-top: 0.6rem;
+        margin-bottom: 0.1rem;
+        font-family: "Sora", system-ui, -apple-system, "Segoe UI", sans-serif;
+    }}
+    .agent-section-body {{
+        color: {INK_SECONDARY};
+        font-size: 0.86rem;
+        line-height: 1.4rem;
+    }}
     footer {{visibility: hidden;}}
     </style>
     """,
@@ -144,85 +176,26 @@ st.markdown(
 )
 
 # ----------------------------------------------------------------------------
-# Formatting helpers
-# ----------------------------------------------------------------------------
-def fmt_pct(x, decimals=1):
-    return "N/A" if pd.isna(x) else f"{x:.{decimals}f}%"
-
-
-def fmt_currency(x, decimals=2):
-    return "N/A" if pd.isna(x) else f"R$ {x:,.{decimals}f}"
-
-
-def fmt_days(x, decimals=1):
-    return "N/A" if pd.isna(x) else f"{x:.{decimals}f} days"
-
-
-def fmt_int(x):
-    return "N/A" if pd.isna(x) else f"{x:,.0f}"
-
-
-def titleize(s: str) -> str:
-    return str(s).replace("_", " ").title()
-
-
-# ----------------------------------------------------------------------------
-# Data loading
+# Data loading (logic lives in data.py; cache it here at the Streamlit layer)
 # ----------------------------------------------------------------------------
 @st.cache_data(show_spinner="Loading order data...")
 def load_orders() -> pd.DataFrame:
-    df = pd.read_csv(
-        DATA_DIR / "orders_analysis.csv",
-        parse_dates=["order_purchase_timestamp"],
-    )
-
-    df["purchase_month"] = df["order_purchase_timestamp"].dt.to_period("M").astype(str)
-    df["purchase_date"] = df["order_purchase_timestamp"].dt.date
-    df["order_status_label"] = df["order_status"].map(titleize)
-
-    handling_bins = [-0.01, 1, 3, 7, np.inf]
-    handling_labels = ["0-1 days", "2-3 days", "4-7 days", "8+ days"]
-    df["handling_group"] = pd.cut(df["handling_days"], bins=handling_bins, labels=handling_labels)
-
-    distance_bins = [-0.01, 250, 500, 1000, np.inf]
-    distance_labels = ["≤250 km", "250-500 km", "500-1,000 km", "1,000+ km"]
-    df["distance_group"] = pd.cut(df["max_distance_km"], bins=distance_bins, labels=distance_labels)
-
-    weight_bins = [-0.01, 500, 2000, 5000, 10000, np.inf]
-    weight_labels = ["<0.5 kg", "0.5-2 kg", "2-5 kg", "5-10 kg", "10+ kg"]
-    df["weight_group"] = pd.cut(df["total_weight_g"], bins=weight_bins, labels=weight_labels)
-
-    return df
+    return _load_orders()
 
 
 @st.cache_data(show_spinner=False)
 def load_sellers() -> pd.DataFrame:
-    df = pd.read_csv(DATA_DIR / "seller_performance.csv")
-    df["late_orders"] = (df["order_count"] * df["late_rate"]).round().astype(int)
-
-    raw_sellers_path = DATA_DIR.parent / "raw" / "olist_sellers_dataset.csv"
-    if raw_sellers_path.exists():
-        states = pd.read_csv(raw_sellers_path, usecols=["seller_id", "seller_state"])
-        df = df.merge(states, on="seller_id", how="left")
-    else:
-        df["seller_state"] = np.nan
-
-    return df
+    return _load_sellers()
 
 
 @st.cache_data(show_spinner=False)
 def load_categories() -> pd.DataFrame:
-    df = pd.read_csv(DATA_DIR / "category_summary.csv")
-    df["late_orders"] = (df["order_count"] * df["late_rate"]).round().astype(int)
-    df["category_label"] = df["product_category_name_english"].map(titleize)
-    return df
+    return _load_categories()
 
 
 @st.cache_data(show_spinner=False)
 def load_monthly() -> pd.DataFrame:
-    df = pd.read_csv(DATA_DIR / "monthly_performance.csv")
-    df["month_label"] = pd.to_datetime(df["purchase_month"] + "-01").dt.strftime("%b %Y")
-    return df
+    return _load_monthly()
 
 
 orders = load_orders()
@@ -707,3 +680,108 @@ for title, body in recommendations:
 st.caption(
     "Recommendation figures recompute from the order-level, seller, and category filters currently applied above."
 )
+
+st.markdown("---")
+
+# ----------------------------------------------------------------------------
+# AI Operations Investigator
+# ----------------------------------------------------------------------------
+st.markdown('<div class="section-title" style="font-size:1.2rem;">AI Operations Investigator</div>', unsafe_allow_html=True)
+st.caption(
+    "Ask an operational question. The agent picks which analytical tools to run, executes them "
+    "against this dashboard's data, and returns an evidence-based diagnosis — it never invents a "
+    "number that a tool didn't return. Uses the current Purchase date and Delivery outcome filters; "
+    "category, seller, and order-status filters are not passed to the agent, for the same reason "
+    "they only scope their own charts above."
+)
+
+SUGGESTED_QUESTIONS = [
+    "Why did late deliveries increase?",
+    "Which sellers should operations review first?",
+    "Where can freight costs be reduced?",
+    "What is hurting customer satisfaction?",
+    "Generate an executive operations brief.",
+]
+
+suggestion_cols = st.columns(len(SUGGESTED_QUESTIONS))
+clicked_question = None
+for col, q in zip(suggestion_cols, SUGGESTED_QUESTIONS):
+    if col.button(q, key=f"suggested_{q}", width="stretch"):
+        clicked_question = q
+
+input_col, ask_col, demo_col = st.columns([3, 1, 1.4])
+custom_question = input_col.text_input(
+    "Ask your own question",
+    key="investigator_input",
+    placeholder="e.g. Why are freight costs high for electronics?",
+    label_visibility="collapsed",
+)
+ask_clicked = ask_col.button("Investigate", type="primary", width="stretch")
+force_demo = demo_col.checkbox(
+    "Demo mode", value=False, help="Skip the API call and use the deterministic rule-based report instead."
+)
+
+question_to_run = clicked_question or (custom_question.strip() if ask_clicked and custom_question.strip() else None)
+
+if question_to_run:
+    with st.spinner("Investigating..."):
+        investigation = agent.investigate(
+            question_to_run,
+            filtered,
+            sellers,
+            categories,
+            monthly_filtered,
+            {"start_date": start_date, "end_date": end_date, "outcome": selected_outcome},
+            force_demo=force_demo,
+        )
+    st.session_state["investigator_result"] = investigation
+    st.session_state["investigator_question_asked"] = question_to_run
+
+def _escape_markdown_dollars(text: str) -> str:
+    # Report text cites currency as "R$ 12.34" — an unescaped "$" opens
+    # Streamlit's LaTeX math mode mid-sentence and mangles the rendering.
+    return str(text).replace("$", "\\$")
+
+
+result = st.session_state.get("investigator_result")
+asked = st.session_state.get("investigator_question_asked")
+
+if result:
+    st.markdown(f'<div class="chart-caption">Question: “{_escape_markdown_dollars(asked)}”</div>', unsafe_allow_html=True)
+
+    with st.expander(f"Tools the agent used ({len(result.tool_calls)})"):
+        if not result.tool_calls:
+            st.caption("No tools were called for this question.")
+        for call in result.tool_calls:
+            label = call.input if call.input else "no parameters"
+            st.markdown(f"**`{call.name}`** — {_escape_markdown_dollars(label)}")
+            st.json(call.output, expanded=False)
+
+    with st.container(border=True, key="chart_agent_report"):
+        badge_class = "agent-badge-demo" if result.mode == "demo" else "agent-badge-llm"
+        badge_text = (
+            "Demo mode — no ANTHROPIC_API_KEY configured, showing a deterministic rule-based report"
+            if result.mode == "demo"
+            else f"Generated by {agent.MODEL}"
+        )
+        st.markdown(f'<div class="agent-badge {badge_class}">{badge_text}</div>', unsafe_allow_html=True)
+
+        if result.mode == "error":
+            st.error(result.answer)
+        elif "Report" in result.sections:
+            st.markdown(
+                f'<div class="agent-section-body">{_escape_markdown_dollars(result.sections["Report"])}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            for header in agent.SECTION_HEADERS:
+                body = result.sections.get(header)
+                if not body:
+                    continue
+                st.markdown(f'<div class="agent-section-label">{header}</div>', unsafe_allow_html=True)
+                st.markdown(_escape_markdown_dollars(body))
+
+        if result.warning and result.mode != "error":
+            st.caption(f"Note: {result.warning}")
+else:
+    st.caption("Pick a suggested question above or ask your own to run an investigation.")

@@ -2,3 +2,7 @@ streamlit>=1.36
 pandas>=2.0
 plotly>=5.20
 numpy>=1.26
+anthropic>=0.40
+
+# dev / tests
+pytest>=8.0
