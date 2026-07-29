@@ -57,8 +57,8 @@ st.markdown(
     html, body, [class*="css"] {{
         font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     }}
-    .block-container {{
-        padding-top: 1.3rem;
+    .block-container, [data-testid="stMainBlockContainer"] {{
+        padding-top: 3.5rem;
         padding-bottom: 1.7rem;
         max-width: 1400px;
     }}
@@ -213,9 +213,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<div class="header-desc">An operational analytics view of order fulfillment — delivery '
-    "timeliness, seller handling time, shipping distance, freight cost, and customer review "
-    "outcomes — built to surface where the fulfillment network is losing time and money.</div>",
+    '<div class="header-desc">This dashboard looks at delivery performance, seller handling time, shipping distance, freight costs, and customer reviews to show where orders are getting delayed and where costs may be reduced.</div>',
     unsafe_allow_html=True,
 )
 
